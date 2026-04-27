@@ -152,11 +152,9 @@ int main()
         double ms_naive = 0, ms_tile = 0, ms_vec = 0, ms_cublas = 0;
 
         // Naive
-        if (M <= 2048) {   // skip naive for 4096 (too slow)
-            ms_naive = time_kernel(launch_sgemm_naive,
-                                   M, N, K, alpha, dA, dB, beta, dC, hC0);
-            verify("naive");
-        }
+        ms_naive = time_kernel(launch_sgemm_naive,
+                               M, N, K, alpha, dA, dB, beta, dC, hC0);
+        verify("naive");
 
         // Tiling
         ms_tile = time_kernel(launch_sgemm_tiling,
