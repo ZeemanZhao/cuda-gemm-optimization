@@ -4,9 +4,9 @@
 
 A step-by-step optimization study of single-precision matrix multiplication (SGEMM) on NVIDIA Ada Lovelace, written from scratch and benchmarked against cuBLAS.
 
-The goal is **pedagogical**: each kernel isolates one optimization technique (shared-memory tiling, register tiling, vectorized loads, bank-conflict avoidance, double buffering) so the performance impact of every step can be attributed and reasoned about with Nsight Compute metrics.
+This is a **learning project**: each kernel does just one optimization (shared-memory tiling, register tiling, vectorized loads, bank-conflict avoidance, double buffering), so the impact of every step can be attributed individually with Nsight Compute metrics.
 
-The study deliberately includes **two negative results** (v4 and v5) — optimizations that are well-known wins on older architectures but regress on Ada (sm_89). Documenting them is the point.
+v4 and v5 are **two optimizations that didn't pan out** — well-known wins on older architectures, but they regress on Ada (sm_89). They stay in the repo because the failure modes themselves are worth understanding.
 
 ![Performance bars at N=4096](docs/figures/performance_bars.png)
 
@@ -24,7 +24,7 @@ The study deliberately includes **two negative results** (v4 and v5) — optimiz
 | v5 — Double buffering (negative result) | 4,273 | 5.66× | 49.3% |
 | cuBLAS (Tensor Core, autotuned) | 8,660 | 11.48× | 100% |
 
-Best handwritten kernel reaches **78% of cuBLAS** in pure FP32 SIMT. The remaining gap to cuBLAS comes from Tensor Core / TF32 dispatch and template-based autotuning, both intentionally out of scope for this study.
+Best handwritten kernel reaches **78% of cuBLAS** in pure FP32 SIMT. The remaining gap to cuBLAS is Tensor Core / TF32 dispatch and template-based autotuning — both out of scope here.
 
 ---
 
@@ -62,7 +62,7 @@ The `+1` padding shifts shared-memory row stride from 16-byte aligned (8 / 128 f
 
 ### Why v5 regresses on Ada
 
-Software double buffering doubles per-block shared memory (8 KB → 16 KB), halving achievable concurrent blocks per SM and cutting occupancy. Without hardware-async copy (`cp.async`, sm_80+), the load/compute overlap nvcc can schedule between two software-managed buffers is limited. The occupancy loss outweighs the load latency hidden. The natural follow-up is `cp.async` + multi-stage pipeline, intentionally deferred from this study.
+Software double buffering doubles per-block shared memory (8 KB → 16 KB), halving the concurrent blocks per SM and cutting occupancy. Without hardware-async copy (`cp.async`, sm_80+), nvcc can only do limited load/compute overlap between two software-managed buffers. The occupancy loss outweighs the latency hidden. The natural follow-up is `cp.async` + multi-stage pipeline — left for a follow-up project.
 
 ---
 
@@ -141,7 +141,7 @@ For GUI inspection, open `.ncu-rep` files in Nsight Compute on Windows / Linux d
 
 ## Out of Scope
 
-Acknowledged but not pursued in this study:
+Known but not done in this project:
 
 - **Tensor Core / WMMA / `mma.sync`** — the main reason cuBLAS is faster on this device. FP16/TF32 paths are a separate project.
 - **`cp.async`** (sm_80+ asynchronous global → shared copy) — the proper hardware-async double buffer that would likely turn v5 into a positive result.

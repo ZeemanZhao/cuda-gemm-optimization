@@ -17,20 +17,8 @@ benchmark.exe
 .DS_Store
 Thumbs.db
 
-# Claude Code internal (career context, planning, sessions, memory)
-CLAUDE.md
-PROJECT_PLAN.md
-.claude/
-sessions/
-memory/
-
-# Personal learning notes (kept local — only project-facing progress goes public)
-progress/
-
-# Large profiling outputs (keep .ncu-rep in nsight_reports/, ignore others)
+# Profiling outputs (keep .ncu-rep in nsight_reports/, ignore others)
 *.qdrep
 *.qdstrm
 *.sqlite
-
-# Profiling stdout dumps (not deliverables)
 nsight_reports/*.log

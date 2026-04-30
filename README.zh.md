@@ -4,9 +4,9 @@
 
 在 NVIDIA Ada Lovelace（sm_89）架构上从零手写单精度矩阵乘法（SGEMM），通过 6 版迭代优化对标 cuBLAS。
 
-项目目标是**教学性的**：每个 kernel 隔离一项优化技术（共享内存 tile / 寄存器 tile / 向量化访存 / bank conflict 消除 / double buffering），让每一步的性能影响都能用 Nsight Compute metric 归因和分析。
+这是个**学习项目**：每个 kernel 只做一项优化（共享内存 tile / 寄存器 tile / 向量化访存 / bank conflict 消除 / double buffering），方便用 Nsight Compute metric 把每一步的性能影响单独归因。
 
-本项目刻意包含**两个反面案例**（v4 和 v5）——在老架构上是经典 win 但在 Ada（sm_89）上反而退化的优化。**记录这些反面案例本身就是项目的一部分**。
+v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win，但在 Ada（sm_89）上反而变慢。把它们留在 repo 里，是因为失败的原因本身值得理解。
 
 ![N=4096 各版本 GFLOPS](docs/figures/performance_bars.png)
 
@@ -26,7 +26,7 @@
 
 > **GFLOPS** = 每秒十亿次浮点运算（Giga Floating-point Operations Per Second）。GEMM 的总 FLOPs = `2 × M × N × K`（每个 FMA 算 2 FLOPs：1 次乘 + 1 次加）。
 
-最优手写 kernel 在纯 FP32 SIMT 下达到 **78% 的 cuBLAS 性能**。剩下到 cuBLAS 的差距来自 Tensor Core / TF32 dispatch 和模板自动调优（autotuning），两者都**有意排除**在本项目范围之外。
+最优手写 kernel 在纯 FP32 SIMT 下达到 **78% 的 cuBLAS 性能**。剩下的差距来自 Tensor Core / TF32 dispatch 和模板自动调优（autotuning）——这两块本项目不做。
 
 ---
 
@@ -68,7 +68,7 @@
 
 软件 double buffering 让单 block 共享内存翻倍（8 KB → 16 KB），同 SM 能同时驻留的 block 数砍半，**occupancy 减半**。在没有硬件 async copy（`cp.async`，sm_80+）的情况下，nvcc 能调度的"加载/计算重叠"非常有限。Occupancy 损失大于 latency hiding 的收益。
 
-后续路径是 `cp.async` + 多 stage pipeline——本项目刻意推迟到下一阶段。
+后续路径是 `cp.async` + 多 stage pipeline——留给下一阶段做。
 
 ---
 
@@ -145,9 +145,9 @@ GUI 查看：用 Windows / Linux 桌面的 Nsight Compute 直接打开 `.ncu-rep
 
 ---
 
-## 不在本项目范围
+## 不做的部分
 
-承认存在但本项目不做：
+知道但没做：
 
 - **Tensor Core / WMMA / `mma.sync`**——cuBLAS 在本设备上更快的主要原因。FP16/TF32 路径是另一个独立项目。
 - **`cp.async`**（sm_80+ 异步 global → shared 拷贝）——硬件级 double buffer，按理论可以让 v5 变成正向结果。
