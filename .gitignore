@@ -31,3 +31,6 @@ progress/
 *.qdrep
 *.qdstrm
 *.sqlite
+
+# Profiling stdout dumps (not deliverables)
+nsight_reports/*.log

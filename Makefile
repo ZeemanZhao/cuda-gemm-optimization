@@ -12,9 +12,12 @@ all: $(TARGET)
 
 $(TARGET): benchmark.cu \
            include/common.cuh \
-           kernels/sgemm_naive.cuh \
-           kernels/sgemm_tiling.cuh \
-           kernels/sgemm_vectorized.cuh
+           kernels/sgemm_v0_naive.cuh \
+           kernels/sgemm_v1_tiling.cuh \
+           kernels/sgemm_v2_register_tile.cuh \
+           kernels/sgemm_v3_vectorized.cuh \
+           kernels/sgemm_v4_bank_conflict_free.cuh \
+           kernels/sgemm_v5_double_buffer.cuh
 	$(NVCC) $(CFLAGS) $(INCLUDES) $(LIBS) -o $@ benchmark.cu
 
 run: $(TARGET)

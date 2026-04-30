@@ -6,9 +6,12 @@
 #include <cuda_runtime.h>
 
 #include "include/common.cuh"
-#include "kernels/sgemm_naive.cuh"
-#include "kernels/sgemm_tiling.cuh"
-#include "kernels/sgemm_vectorized.cuh"
+#include "kernels/sgemm_v0_naive.cuh"
+#include "kernels/sgemm_v1_tiling.cuh"
+#include "kernels/sgemm_v2_register_tile.cuh"
+#include "kernels/sgemm_v3_vectorized.cuh"
+#include "kernels/sgemm_v4_bank_conflict_free.cuh"
+#include "kernels/sgemm_v5_double_buffer.cuh"
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -102,13 +105,11 @@ int main()
     printf("alpha=1.0, beta=0.0,  repeats=%d\n\n", REPEATS);
 
     // Header
-    printf("%-8s  %-12s  %-12s  %-12s  %-12s  %-12s  %-12s  %-8s\n",
-           "Size",
-           "Naive(ms)", "Naive(Gf)",
-           "Tiling(ms)", "Tiling(Gf)",
-           "VecReg(ms)", "VecReg(Gf)",
-           "cuBLAS(Gf)");
-    printf("%s\n", std::string(110, '-').c_str());
+    printf("%-6s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s\n",
+           "Size", "Naive", "Tiling", "RegT(v2)", "VecReg(v3)", "BankF(v4)", "DBuf(v5)", "cuBLAS");
+    printf("%-6s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s\n",
+           "    ", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS");
+    printf("%s\n", std::string(90, '-').c_str());
 
     const float alpha = 1.f, beta = 0.f;
 
@@ -149,7 +150,7 @@ int main()
         };
 
         // ── Benchmark ──
-        double ms_naive = 0, ms_tile = 0, ms_vec = 0, ms_cublas = 0;
+        double ms_naive = 0, ms_tile = 0, ms_v2 = 0, ms_vec = 0, ms_v4 = 0, ms_v5 = 0, ms_cublas = 0;
 
         // Naive
         ms_naive = time_kernel(launch_sgemm_naive,
@@ -161,29 +162,45 @@ int main()
                                M, N, K, alpha, dA, dB, beta, dC, hC0);
         verify("tiling");
 
-        // Vectorized
+        // v2: register tiling, scalar load
+        ms_v2 = time_kernel(launch_sgemm_v2_register_tile,
+                            M, N, K, alpha, dA, dB, beta, dC, hC0);
+        verify("v2_regtile");
+
+        // v3: register tiling + float4 vectorized
         ms_vec = time_kernel(launch_sgemm_vectorized,
                               M, N, K, alpha, dA, dB, beta, dC, hC0);
-        verify("vectorized");
+        verify("v3_vectorized");
+
+        // v4: v3 + +1 padding bank-conflict-free
+        ms_v4 = time_kernel(launch_sgemm_v4_bank_conflict_free,
+                            M, N, K, alpha, dA, dB, beta, dC, hC0);
+        verify("v4_bankfree");
+
+        // v5: v3 + double buffering (software pipelining)
+        ms_v5 = time_kernel(launch_sgemm_v5_double_buffer,
+                            M, N, K, alpha, dA, dB, beta, dC, hC0);
+        verify("v5_dbuf");
 
         // cuBLAS
         ms_cublas = time_kernel(cublas_sgemm,
                                  M, N, K, alpha, dA, dB, beta, dC, hC0);
 
-        // ── Print row ──
+        // ── Print row (GFLOPS only) ──
         double gf_naive  = ms_naive  > 0 ? gflops(M,N,K,ms_naive)  : 0;
         double gf_tile   = gflops(M, N, K, ms_tile);
+        double gf_v2     = gflops(M, N, K, ms_v2);
         double gf_vec    = gflops(M, N, K, ms_vec);
+        double gf_v4     = gflops(M, N, K, ms_v4);
+        double gf_v5     = gflops(M, N, K, ms_v5);
         double gf_cublas = gflops(M, N, K, ms_cublas);
 
         if (ms_naive > 0)
-            printf("%-8d  %-12.3f  %-12.1f  %-12.3f  %-12.1f  %-12.3f  %-12.1f  %-8.1f\n",
-                   M, ms_naive, gf_naive, ms_tile, gf_tile,
-                   ms_vec, gf_vec, gf_cublas);
+            printf("%-6d  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f\n",
+                   M, gf_naive, gf_tile, gf_v2, gf_vec, gf_v4, gf_v5, gf_cublas);
         else
-            printf("%-8d  %-12s  %-12s  %-12.3f  %-12.1f  %-12.3f  %-12.1f  %-8.1f\n",
-                   M, "(skip)", "(skip)", ms_tile, gf_tile,
-                   ms_vec, gf_vec, gf_cublas);
+            printf("%-6d  %-9s  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f\n",
+                   M, "skip", gf_tile, gf_v2, gf_vec, gf_v4, gf_v5, gf_cublas);
 
         // ── Cleanup ──
         cudaFree(dA); cudaFree(dB); cudaFree(dC);
