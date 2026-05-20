@@ -23,11 +23,11 @@ v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win�
 | v4 — + 1-padding（反面案例）| 7,268 | 8.37× | 75.2% |
 | v5 — Double buffering（反面案例）| 4,781 | 5.50× | 49.4% |
 | **v6 — + cp.async pipeline** ⭐ | **8,708** | **10.02×** | **90.1%** |
-| cuBLAS（Tensor Core, autotuned）| 9,668 | 11.13× | 100% |
+| cuBLAS（FP32 SIMT, autotuned）| 9,668 | 11.13× | 100% |
 
 > **GFLOPS** = 每秒十亿次浮点运算（Giga Floating-point Operations Per Second）。GEMM 的总 FLOPs = `2 × M × N × K`（每个 FMA 算 2 FLOPs：1 次乘 + 1 次加）。
 
-最优手写 kernel（**v6, cp.async**）在纯 FP32 SIMT 下达到 **90% 的 cuBLAS 性能**。剩下的差距来自 Tensor Core / TF32 dispatch 和模板自动调优（autotuning）——这两块本项目不做。意外之处：v6 的提升来自 **latency hiding，而不是 occupancy**——见下方 v6 章节。
+最优手写 kernel（**v6, cp.async**）达到 **90% 的 cuBLAS 性能**——而这里的 cuBLAS *本身也是 FP32 SIMT*（9.7 TFLOPS ≈ FP32 峰值的 64%；若走 TF32 Tensor Core 会远超 ~15 TFLOPS 的 FP32 天花板，但我们没看到）。所以剩下的 ~10% 是**更好的 FP32-SIMT 工程**——shape autotuning、warp-level tiling、swizzle 布局、L2-aware 的 threadblock rasterization——**不是换了算力单元**。v6 自身的意外之处：它比 v5 快是靠 **latency hiding，而不是 occupancy**——见下方 v6 章节。
 
 ---
 
@@ -42,7 +42,7 @@ v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win�
 | 寄存器 / SM | 65,536 × 32-bit |
 | 工具链 | CUDA 12.4, Nsight Compute 2024.1.1, WSL2 (Ubuntu) |
 
-> 注：本 benchmark 中 cuBLAS 使用 FP32 SGEMM。Ampere 及更新架构上 cuBLAS 可能内部 dispatch 到 TF32 Tensor Core（取决于 `cublasMath` 设置），这是它对纯 FP32 SIMT 手写 kernel 仍然保持难以追平的天花板的原因。
+> 注：这里的 cuBLAS 调用是默认 math mode 下的 `cublasSgemm`。实测吞吐（~9.7 TFLOPS，≈ FP32 峰值的 64%）证明它在本机跑的是 **FP32-SIMT** kernel——若走 TF32 Tensor Core 会远高于 ~15 TFLOPS 的 FP32 天花板。TF32 tensor core *确实*可用（通过 `cublasMath` / `NVIDIA_TF32_OVERRIDE` 环境变量），是一个降精度的、更高的独立天花板——本项目不做。
 
 ---
 
@@ -171,7 +171,7 @@ GUI 查看：用 Windows / Linux 桌面的 Nsight Compute 直接打开 `.ncu-rep
 
 知道但没做：
 
-- **Tensor Core / WMMA / `mma.sync`**——cuBLAS 在本设备上更快的主要原因。FP16/TF32 路径是另一个独立项目。
+- **Tensor Core / WMMA / `mma.sync`**——一个降精度（TF32/FP16）的、更高的独立天花板。**不是** cuBLAS 在这里超过 v6 的原因：本 benchmark 的 cuBLAS 是 FP32 SIMT（见硬件注）。手写 tensor-core kernel 是另一个独立项目。
 - **Swizzle 共享布局（v7）**——用 XOR 置换列地址消除现在成为 v6 头号瓶颈的 268 M shared-bank conflict。下一步计划。
 - **Warp specialization**（一个 CTA 内拆 producer/consumer）。
 - **模板化 autotuning**——遍历 (BM, BN, BK, TM, TN) 空间针对 (M, N, K, sm_xx) 的编译/运行时搜索。

@@ -23,9 +23,9 @@ v4 and v5 are **two optimizations that didn't pan out** — well-known wins on o
 | v4 — + 1-padding (negative result) | 7,268 | 8.37× | 75.2% |
 | v5 — Double buffering (negative result) | 4,781 | 5.50× | 49.4% |
 | **v6 — + cp.async pipeline** ⭐ | **8,708** | **10.02×** | **90.1%** |
-| cuBLAS (Tensor Core, autotuned) | 9,668 | 11.13× | 100% |
+| cuBLAS (FP32 SIMT, autotuned) | 9,668 | 11.13× | 100% |
 
-Best handwritten kernel (**v6, cp.async**) reaches **90% of cuBLAS** in pure FP32 SIMT. The remaining gap is Tensor Core / TF32 dispatch and template-based autotuning — both out of scope here. The surprise: v6's gain is **latency hiding, not occupancy** — explained in the v6 section below.
+Best handwritten kernel (**v6, cp.async**) reaches **90% of cuBLAS** — and this cuBLAS call is *itself* FP32 SIMT (its 9.7 TFLOPS is ~64% of the FP32 peak; a TF32 Tensor Core path would run far above the ~15 TFLOPS FP32 ceiling, which we don't see). So the remaining ~10% is **better FP32-SIMT engineering** — shape autotuning, warp-level tiling, swizzled layouts, L2-aware threadblock rasterization — *not* a different math unit. The surprise within v6 itself: its gain over v5 is **latency hiding, not occupancy** — explained in the v6 section below.
 
 ---
 
@@ -40,7 +40,7 @@ Best handwritten kernel (**v6, cp.async**) reaches **90% of cuBLAS** in pure FP3
 | Registers / SM | 65,536 × 32-bit |
 | Toolchain | CUDA 12.4, Nsight Compute 2024.1.1, WSL2 (Ubuntu) |
 
-> Note: cuBLAS in this benchmark is FP32 SGEMM. On Ampere+ hardware cuBLAS may internally dispatch to TF32 Tensor Cores depending on `cublasMath` settings, which is why it remains a non-trivial ceiling for purely FP32-SIMT handwritten kernels.
+> Note: the cuBLAS call here is `cublasSgemm` in the default math mode. Measured throughput (~9.7 TFLOPS, ~64% of FP32 peak) confirms it runs an **FP32-SIMT** kernel on this device — a TF32 Tensor Core path would land far above the ~15 TFLOPS FP32 ceiling. TF32 tensor cores *are* available (via `cublasMath` / the `NVIDIA_TF32_OVERRIDE` env var) and are a separate, higher ceiling at reduced precision — out of scope here.
 
 ---
 
@@ -165,7 +165,7 @@ For GUI inspection, open `.ncu-rep` files in Nsight Compute on Windows / Linux d
 
 Known but not done in this project:
 
-- **Tensor Core / WMMA / `mma.sync`** — the main reason cuBLAS is faster on this device. FP16/TF32 paths are a separate project.
+- **Tensor Core / WMMA / `mma.sync`** — a separate, higher ceiling at reduced precision (TF32/FP16). *Not* the reason cuBLAS beats v6 here: this benchmark's cuBLAS is FP32 SIMT (see the Hardware note). A handwritten tensor-core kernel is its own project.
 - **Swizzled shared layout (v7)** — XOR-permuted column addresses to remove the 268 M shared-bank conflicts that are now v6's dominant bottleneck. Planned next.
 - **Warp specialization** (producer / consumer split inside one CTA).
 - **Template-based autotuning** — searching the (BM, BN, BK, TM, TN) space per (M, N, K, sm_xx) at compile or runtime.
