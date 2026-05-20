@@ -11,7 +11,8 @@ Outputs:
     docs/figures/speedup_bars.png        (bar chart: speedup vs naive at N=4096)
 
 Numbers below come from the most recent full-power benchmark run on
-RTX 4060 Laptop (sm_89), CUDA 12.4, alpha=1, beta=0, 10 timed iterations.
+RTX 4060 Laptop (sm_89), CUDA 12.4, alpha=1, beta=0, 10 timed iterations
+(2026-05-21 run, includes v6 cp.async).
 Update this dict when you re-run benchmarks.
 """
 
@@ -26,13 +27,14 @@ from pathlib import Path
 SIZES = [512, 1024, 2048, 4096]
 
 RESULTS = {
-    "v0 Naive":          [664.9,  706.2,  859.5,  754.5],
-    "v1 Tiling":         [846.7,  740.4, 1062.3,  990.6],
-    "v2 RegTile":        [2386.8, 3316.6, 5640.7, 4953.0],
-    "v3 + float4":       [2746.3, 4084.7, 7863.3, 6755.9],
-    "v4 +1 padding (-)": [2680.9, 3444.1, 7372.2, 6554.6],
-    "v5 DoubleBuf (-)":  [2832.5, 3265.1, 5835.6, 4273.1],
-    "cuBLAS":            [4920.6, 4855.9, 9618.4, 8659.9],
+    "v0 Naive":          [674.6,  709.3,  985.7,  868.6],
+    "v1 Tiling":         [821.1,  906.1, 1247.4, 1116.3],
+    "v2 RegTile":        [2340.7, 3781.7, 5643.8, 5191.3],
+    "v3 + float4":       [2724.5, 4885.6, 7892.1, 7682.8],
+    "v4 +1 padding (-)": [2667.5, 4629.2, 7403.7, 7268.5],
+    "v5 DoubleBuf (-)":  [2819.4, 4193.6, 5819.2, 4780.6],
+    "v6 + cp.async":     [3777.3, 5537.7, 8410.5, 8707.6],
+    "cuBLAS":            [4983.1, 6322.7, 9669.8, 9668.0],
 }
 
 # Color scheme: positive optimizations bright, negative results muted
@@ -40,9 +42,10 @@ COLORS = {
     "v0 Naive":          "#888888",
     "v1 Tiling":         "#4477aa",
     "v2 RegTile":        "#228833",
-    "v3 + float4":       "#ee6677",   # headline
+    "v3 + float4":       "#ee6677",   # float4 milestone
     "v4 +1 padding (-)": "#cc99cc",   # muted (negative)
     "v5 DoubleBuf (-)":  "#cc99cc",   # muted (negative)
+    "v6 + cp.async":     "#aa3377",   # headline (best)
     "cuBLAS":            "#000000",
 }
 
@@ -53,6 +56,7 @@ LINESTYLES = {
     "v3 + float4":       "-",
     "v4 +1 padding (-)": "--",
     "v5 DoubleBuf (-)":  "--",
+    "v6 + cp.async":     "-",
     "cuBLAS":            ":",
 }
 
