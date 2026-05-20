@@ -6,7 +6,7 @@ INCLUDES := -I.
 LIBS     := -lcublas
 TARGET   := benchmark
 
-.PHONY: all clean run profile
+.PHONY: all clean run profile test
 
 all: $(TARGET)
 
@@ -17,7 +17,8 @@ $(TARGET): benchmark.cu \
            kernels/sgemm_v2_register_tile.cuh \
            kernels/sgemm_v3_vectorized.cuh \
            kernels/sgemm_v4_bank_conflict_free.cuh \
-           kernels/sgemm_v5_double_buffer.cuh
+           kernels/sgemm_v5_double_buffer.cuh \
+           kernels/sgemm_v6_cpasync.cuh
 	$(NVCC) $(CFLAGS) $(INCLUDES) $(LIBS) -o $@ benchmark.cu
 
 run: $(TARGET)
@@ -34,5 +35,9 @@ sm__sass_thread_inst_executed_op_ffma_pred_on.sum \
 	    --target-processes all \
 	    ./$(TARGET)
 
+test: tests/test_v6_correctness.cu include/common.cuh kernels/sgemm_v6_cpasync.cuh
+	$(NVCC) $(CFLAGS) $(INCLUDES) $(LIBS) -o test_v6 tests/test_v6_correctness.cu
+	./test_v6
+
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) test_v6

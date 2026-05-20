@@ -1,6 +1,7 @@
 # Build artifacts
 benchmark
 benchmark.exe
+test_v6
 *.o
 *.obj
 *.exe
