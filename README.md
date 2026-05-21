@@ -4,9 +4,9 @@
 
 A step-by-step optimization study of single-precision matrix multiplication (SGEMM) on NVIDIA Ada Lovelace, written from scratch and benchmarked against cuBLAS.
 
-This is a **learning project**: each kernel does just one optimization (shared-memory tiling, register tiling, vectorized loads, bank-conflict avoidance, double buffering, async copy), so the impact of every step can be attributed individually with Nsight Compute metrics.
+Each kernel applies exactly one optimization on top of the previous one — shared-memory tiling, register tiling, vectorized loads, bank-conflict handling, double buffering, async copy — so Nsight Compute can attribute the effect of each step in isolation.
 
-v4 and v5 are **two optimizations that didn't pan out** — well-known wins on older architectures, but they regress on Ada (sm_89). They stay in the repo because the failure modes themselves are worth understanding. v6 then adds `cp.async` (and the *reason* it wins — latency hiding, not the occupancy recovery you'd expect — is one of the more interesting results here). v7 adds an XOR-swizzled shared layout that drives the shared bank conflicts to **zero**, reaching **~98% of cuBLAS**.
+v4 and v5 regress on Ada (sm_89) despite being well-known wins on older architectures; they are kept as documented negative results. v6 introduces `cp.async`, and v7 adds an XOR-swizzled shared layout that drives the shared bank conflicts to zero. The best kernel (v7) reaches **~98% of cuBLAS** in pure FP32 SIMT.
 
 ![Performance bars at N=4096](docs/figures/performance_bars.png)
 
@@ -26,7 +26,7 @@ v4 and v5 are **two optimizations that didn't pan out** — well-known wins on o
 | **v7 — + Bs XOR-swizzle** ⭐ | **9,524** | **11.09×** | **97.8%** |
 | cuBLAS (FP32 SIMT, autotuned) | 9,740 | 11.34× | 100% |
 
-Best handwritten kernel (**v7, cp.async + swizzle**) reaches **~98% of cuBLAS** in pure FP32 SIMT — and this cuBLAS call is *itself* FP32 SIMT (its ~9.7 TFLOPS is ~64% of the FP32 peak; a TF32 Tensor Core path would run far above the ~15 TFLOPS FP32 ceiling, which we don't see). So the small remaining gap is **better FP32-SIMT engineering** (shape autotuning, occupancy), *not* a different math unit. Two findings drive the last stretch: v6's gain is **latency hiding, not occupancy**; v7's is **eliminating the shared bank conflicts** — both explained below.
+The best handwritten kernel (**v7**) reaches **~98% of cuBLAS** in pure FP32 SIMT. This cuBLAS call is itself FP32 SIMT — ~9.7 TFLOPS, ~64% of the FP32 peak; a TF32 Tensor Core path would run far above the ~15 TFLOPS FP32 ceiling. The remaining gap is FP32-SIMT engineering (shape autotuning, occupancy), not a different math unit. The per-version sections below give the Nsight Compute attribution for each step.
 
 ---
 
@@ -62,17 +62,17 @@ All kernels share the same launch convention: `C = α · A·B + β · C` with ro
 
 ### Why v4 regresses on Ada
 
-The `+1` padding shifts shared-memory row stride from 16-byte aligned (8 / 128 floats) to non-aligned (9 / 129 floats). Original `float4` shared **stores** must degrade to four scalar stores, quadrupling instruction count on the LSU pipe. On Ada (sm_89), the saved bank-conflict wavefronts are smaller than the added store overhead, producing a net regression. On older architectures (Volta / Turing) where shared-bank arbitration is more expensive, the same change would yield a positive result. **Architecture-dependent optimization is the lesson.**
+The `+1` padding shifts shared-memory row stride from 16-byte aligned (8 / 128 floats) to non-aligned (9 / 129 floats). Original `float4` shared **stores** must degrade to four scalar stores, quadrupling instruction count on the LSU pipe. On Ada (sm_89), the saved bank-conflict wavefronts are smaller than the added store overhead, producing a net regression. On older architectures (Volta / Turing), where shared-bank arbitration is more expensive, the same change would be a net win — the optimization is architecture-dependent.
 
 ### Why v5 regresses on Ada
 
-Software double buffering doubles per-block shared memory (8 KB → 16 KB), halving the concurrent blocks per SM and cutting occupancy. Without hardware-async copy (`cp.async`, sm_80+), nvcc can only do limited load/compute overlap between two software-managed buffers. The occupancy loss outweighs the latency hidden. The natural follow-up is `cp.async` + multi-stage pipeline — implemented as **v6 below**, with a result that overturns the occupancy hypothesis.
+Software double buffering doubles per-block shared memory (8 KB → 16 KB), halving the concurrent blocks per SM and cutting occupancy. Without hardware-async copy (`cp.async`, sm_80+), nvcc can only do limited load/compute overlap between two software-managed buffers. The occupancy loss outweighs the latency hidden. The hardware-async path (`cp.async` + multi-stage pipeline) is implemented as **v6**.
 
-### Why v6 (cp.async) wins — and why the reason is surprising
+### v6: cp.async — latency hiding, not occupancy
 
-v6 keeps v3's compute core unchanged and only swaps the global→shared load path to `cuda::memcpy_async` (lowering to `cp.async` / LDGSTS on sm_80+), driven by a thread-scope `cuda::pipeline` with a 2-stage buffer.
+v6 keeps v3's compute core and replaces only the global→shared load path with `cuda::memcpy_async` (lowering to `cp.async` / LDGSTS on sm_80+), driven by a thread-scope `cuda::pipeline` with a 2-stage buffer.
 
-The hypothesis going in was that cp.async would **recover the occupancy** v5 lost, by removing the register-resident prefetch staging. Nsight Compute says that is **not** what happened:
+`cp.async` can help two ways: by bypassing the register file (which could recover the occupancy v5 lost) and by overlapping the transfer with compute. Nsight Compute shows only the second applies here:
 
 | Metric @ 4096 | v3 | v5 | v6 |
 |---|---:|---:|---:|
@@ -81,13 +81,13 @@ The hypothesis going in was that cp.async would **recover the occupancy** v5 los
 | shared bank conflicts | 268 M | 268 M | 268 M |
 | `long_scoreboard` stall | 1.66 | 1.88 | **0.075** |
 
-v6's occupancy is **identical to v5's** (16.6%) and its register count is actually *higher* — the occupancy thesis failed outright. What won instead was **latency hiding**: cp.async overlaps the global→shared transfer with compute, collapsing the `long_scoreboard` (global-memory wait) stall from 1.88 to ~0.075.
+Occupancy is identical to v5's (16.6%) and registers are slightly higher: `cp.async` does not recover occupancy here. The gain is entirely **latency hiding** — overlapping the global→shared transfer with compute collapses the `long_scoreboard` (global-memory wait) stall from 1.88 to ~0.075.
 
-Because v5 and v6 have **the same occupancy and the same bank conflicts**, the +82% jump from v5 → v6 is attributable almost entirely to that overlap. The lesson: `cp.async` provides **two independent benefits — register-bypass (→ occupancy) and async overlap (→ latency hiding)** — and on this kernel only the second one materialized. Low occupancy is not fatal when the latency it would have hidden is hidden another way. The bottleneck has now shifted from global-memory latency to the **shared-memory bank conflicts** (still 268 M) — which **v7 attacks next**.
+Since v5 and v6 share the same occupancy and the same bank conflicts, the +82% from v5 → v6 is attributable to that overlap alone. `cp.async` offers two independent benefits — register-bypass (→ occupancy) and async overlap (→ latency hiding) — and only the second applies on this kernel. The bottleneck then shifts from global-memory latency to the **shared-memory bank conflicts** (still 268 M), which v7 addresses.
 
-### Why v7 (swizzle) wins
+### v7: XOR swizzle removes the bank conflicts
 
-v7 keeps everything in v6 and only changes *where* each Bs column lives in shared memory. The Bs read is 4-way bank-conflicting: a warp's 16 `float4` columns land in only 4 of the 8 `float4` bank-groups. An XOR swizzle — `perm(c4) = c4 ^ (c4 >> 3)`, applied at *both* the `cp.async` store and the compute read — spreads them across all 8 groups. It permutes whole `float4`s, so 16-byte alignment (and the `LDS.128` vectorization) is preserved; the `+1` padding of v4 couldn't do that.
+v7 keeps everything in v6 and changes only *where* each Bs column lives in shared memory. The Bs read is 4-way bank-conflicting: a warp's 16 `float4` columns land in only 4 of the 8 `float4` bank-groups. An XOR swizzle — `perm(c4) = c4 ^ (c4 >> 3)`, applied at *both* the `cp.async` store and the compute read — spreads them across all 8 groups. It permutes whole `float4`s, so 16-byte alignment (and the `LDS.128` vectorization) is preserved; the `+1` padding of v4 couldn't do that.
 
 | Metric @ 4096 | v6 | v7 |
 |---|---:|---:|
@@ -96,7 +96,7 @@ v7 keeps everything in v6 and only changes *where* each Bs column lives in share
 | `short_scoreboard` stall | 0.39 | 0.275 |
 | GFLOPS | 8,711 | **9,524** (≈98% cuBLAS) |
 
-Nsight Compute confirms the shared bank conflicts go to **zero** (not merely halved), and shared-load traffic drops 43%. Occupancy is unchanged (16.6%) — the win is purely the conflict-free shared access. At ~98% of (FP32-SIMT) cuBLAS this is near the practical ceiling for a hand-written FP32 kernel on this device; the last ~2% is occupancy- and tuning-bound, not bank-conflict-bound.
+Shared bank conflicts drop to **zero** and shared-load traffic falls 43%; occupancy is unchanged (16.6%). At ~98% of (FP32-SIMT) cuBLAS, this is near the practical ceiling for a hand-written FP32 kernel on this device — the remaining gap is occupancy- and tuning-bound.
 
 ---
 

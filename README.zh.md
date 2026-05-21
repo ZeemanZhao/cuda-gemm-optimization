@@ -4,9 +4,9 @@
 
 在 NVIDIA Ada Lovelace（sm_89）架构上从零手写单精度矩阵乘法（SGEMM），通过 7 版迭代优化对标 cuBLAS。
 
-这是个**学习项目**：每个 kernel 只做一项优化（共享内存 tile / 寄存器 tile / 向量化访存 / bank conflict 消除 / double buffering / 异步拷贝 cp.async），方便用 Nsight Compute metric 把每一步的性能影响单独归因。
+每个 kernel 在前一版基础上只做一项优化——共享内存 tile、寄存器 tile、向量化访存、bank conflict 处理、double buffering、异步拷贝——这样 Nsight Compute 能把每一步的影响单独归因。
 
-v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win，但在 Ada（sm_89）上反而变慢。把它们留在 repo 里，是因为失败的原因本身值得理解。v6 引入 `cp.async`（它**为什么**快——靠 latency hiding，而不是你以为的 occupancy 回升——是 repo 里较有意思的结果之一）。v7 再加一层 XOR-swizzle 的共享布局，把 shared bank conflict 降到**零**，达到 **~98% 的 cuBLAS**。
+v4 和 v5 在 Ada（sm_89）上反而变慢——尽管它们在老架构上是经典优化；作为 documented 反面案例保留。v6 引入 `cp.async`，v7 再加一层 XOR-swizzle 的共享布局把 shared bank conflict 降到零。最优版本 v7 在纯 FP32 SIMT 下达到 **~98% 的 cuBLAS**。
 
 ![N=4096 各版本 GFLOPS](docs/figures/performance_bars.png)
 
@@ -28,7 +28,7 @@ v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win�
 
 > **GFLOPS** = 每秒十亿次浮点运算（Giga Floating-point Operations Per Second）。GEMM 的总 FLOPs = `2 × M × N × K`（每个 FMA 算 2 FLOPs：1 次乘 + 1 次加）。
 
-最优手写 kernel（**v7, cp.async + swizzle**）达到 **~98% 的 cuBLAS 性能**——而这里的 cuBLAS *本身也是 FP32 SIMT*（~9.7 TFLOPS ≈ FP32 峰值的 64%；若走 TF32 Tensor Core 会远超 ~15 TFLOPS 的 FP32 天花板，但我们没看到）。所以剩下的小差距是**更好的 FP32-SIMT 工程**（shape autotuning、occupancy），**不是换了算力单元**。最后这一档由两个发现驱动：v6 的提升是 **latency hiding 而非 occupancy**；v7 的是 **消除 shared bank conflict**——两个都在下方解释。
+最优手写 kernel（**v7**）在纯 FP32 SIMT 下达到 **~98% 的 cuBLAS**。这里的 cuBLAS 本身也是 FP32 SIMT——~9.7 TFLOPS，约 FP32 峰值的 64%；若走 TF32 Tensor Core 会远超 ~15 TFLOPS 的 FP32 天花板。剩下的差距是 FP32-SIMT 工程（shape autotuning、occupancy），不是换了算力单元。下面各版本给出每一步的 Nsight Compute 归因。
 
 ---
 
@@ -66,19 +66,19 @@ v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win�
 
 `+1` padding 把 shared 内存的行 stride 从 16 字节对齐（8 / 128 floats）变成不对齐（9 / 129 floats）。原本的 `float4` 共享内存**写入**操作必须退化成 4 次标量写入，LSU pipe 上的指令数翻 4 倍。在 Ada（sm_89）上，节省下来的 bank-conflict 消耗小于增加的 store 指令开销，**净退化**。
 
-在更老的架构（Volta / Turing）上 shared bank arbitration 开销更大，同样的优化会带来正向收益。**架构相关的优化**——这是这个反面案例最有教学价值的一课。
+在更老的架构（Volta / Turing）上 shared bank arbitration 开销更大，同样的优化会带来正向收益——这个优化是架构相关的。
 
 ### v5 在 Ada 上为什么退化
 
 软件 double buffering 让单 block 共享内存翻倍（8 KB → 16 KB），同 SM 能同时驻留的 block 数砍半，**occupancy 减半**。在没有硬件 async copy（`cp.async`，sm_80+）的情况下，nvcc 能调度的"加载/计算重叠"非常有限。Occupancy 损失大于 latency hiding 的收益。
 
-后续路径是 `cp.async` + 多 stage pipeline——**已实现为下方的 v6**，而且结果推翻了"靠 occupancy"的假设。
+后续路径是硬件 async（`cp.async` + 多 stage pipeline），实现为 **v6**。
 
-### v6（cp.async）为什么快——以及为什么原因出人意料
+### v6：cp.async —— latency hiding，不是 occupancy
 
-v6 完全不动 v3 的计算核心，只把 global→shared 的加载路径换成 `cuda::memcpy_async`（在 sm_80+ 上 lower 成 `cp.async` / LDGSTS），由 thread-scope 的 `cuda::pipeline` + 2-stage 缓冲驱动。
+v6 不动 v3 的计算核心，只把 global→shared 的加载路径换成 `cuda::memcpy_async`（在 sm_80+ 上 lower 成 `cp.async` / LDGSTS），由 thread-scope 的 `cuda::pipeline` + 2-stage 缓冲驱动。
 
-最初的假设是：cp.async 能**把 v5 丢掉的 occupancy 救回来**，因为它去掉了驻留寄存器的预取暂存。Nsight Compute 说**并不是**这么回事：
+`cp.async` 可能从两方面帮忙：绕过寄存器文件（或许能救回 v5 丢的 occupancy），以及让传输与计算重叠。Nsight Compute 显示这里只有第二点成立：
 
 | 指标 @ 4096 | v3 | v5 | v6 |
 |---|---:|---:|---:|
@@ -87,11 +87,11 @@ v6 完全不动 v3 的计算核心，只把 global→shared 的加载路径换�
 | shared bank conflict | 268 M | 268 M | 268 M |
 | `long_scoreboard` stall | 1.66 | 1.88 | **0.075** |
 
-v6 的 occupancy 和 v5 **完全一样**（16.6%），寄存器数甚至更高——occupancy 论点彻底失败。真正起作用的是 **latency hiding**：cp.async 把 global→shared 传输和计算重叠，把 `long_scoreboard`（等 global memory）stall 从 1.88 压到约 0.075。
+occupancy 和 v5 完全一样（16.6%），寄存器还略高：cp.async 在这里没救回 occupancy。提升完全来自 **latency hiding**——把 global→shared 传输与计算重叠，使 `long_scoreboard`（等 global memory）stall 从 1.88 降到约 0.075。
 
-因为 v5 和 v6 的 **occupancy 相同、bank conflict 也相同**，v5 → v6 的 +82% 几乎可以完全归因于这个重叠。教训是：`cp.async` 提供**两个独立的好处——register-bypass（→ occupancy）和 async overlap（→ latency hiding）**——在这个 kernel 上只有第二个兑现了。当延迟被另一种方式藏住时，低 occupancy 并不致命。瓶颈现在从 global memory 延迟转移到了 **shared memory bank conflict**（仍是 268 M）——**这正是 v7 要解决的**。
+v5 与 v6 的 occupancy 相同、bank conflict 也相同，所以 v5 → v6 的 +82% 可归因于这个重叠。`cp.async` 提供两个独立的好处——register-bypass（→ occupancy）与 async overlap（→ latency hiding）——这个 kernel 上只有第二个兑现。瓶颈随之从 global memory 延迟转移到 **shared memory bank conflict**（仍是 268 M），由 v7 解决。
 
-### v7（swizzle）为什么快
+### v7：XOR swizzle 消除 bank conflict
 
 v7 完全保留 v6，只改 Bs 的每一列**存在 shared 的哪个物理位置**。Bs 读是 4-way bank conflict：一个 warp 的 16 个 `float4` 列只落在 8 个 `float4` bank-组里的 4 个。XOR swizzle——`perm(c4) = c4 ^ (c4 >> 3)`，在 `cp.async` 写 **和** compute 读两处都用——把它们摊到全 8 组。它按整个 `float4` 置换，所以 16 字节对齐（以及 `LDS.128` 向量化）都保住了；v4 的 `+1` padding 做不到这点。
 
@@ -102,7 +102,7 @@ v7 完全保留 v6，只改 Bs 的每一列**存在 shared 的哪个物理位置
 | `short_scoreboard` stall | 0.39 | 0.275 |
 | GFLOPS | 8,711 | **9,524**（≈98% cuBLAS）|
 
-Nsight Compute 确认 shared bank conflict 直接归 **零**（不只是减半），shared 访存流量降 43%。occupancy 不变（16.6%）——纯靠无冲突的 shared 访问拿下。~98% of（FP32-SIMT）cuBLAS 已接近本设备手写 FP32 kernel 的实际天花板；最后 ~2% 受 occupancy/调优制约，不再是 bank conflict。
+shared bank conflict 降到 **零**，shared 访存流量降 43%；occupancy 不变（16.6%）。~98% of（FP32-SIMT）cuBLAS 已接近本设备手写 FP32 kernel 的实际天花板，剩余差距受 occupancy/调优制约。
 
 ---
 
