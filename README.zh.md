@@ -6,7 +6,7 @@
 
 这是个**学习项目**：每个 kernel 只做一项优化（共享内存 tile / 寄存器 tile / 向量化访存 / bank conflict 消除 / double buffering / 异步拷贝 cp.async），方便用 Nsight Compute metric 把每一步的性能影响单独归因。
 
-v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win，但在 Ada（sm_89）上反而变慢。把它们留在 repo 里，是因为失败的原因本身值得理解。v6 引入 `cp.async` 成为最快的 kernel——但它**为什么**快（靠 latency hiding，而不是你以为的 occupancy 回升）才是整个 repo 里最有意思的结果。
+v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win，但在 Ada（sm_89）上反而变慢。把它们留在 repo 里，是因为失败的原因本身值得理解。v6 引入 `cp.async`（它**为什么**快——靠 latency hiding，而不是你以为的 occupancy 回升——是 repo 里较有意思的结果之一）。v7 再加一层 XOR-swizzle 的共享布局，把 shared bank conflict 降到**零**，达到 **~98% 的 cuBLAS**。
 
 ![N=4096 各版本 GFLOPS](docs/figures/performance_bars.png)
 
@@ -16,18 +16,19 @@ v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win�
 
 | Kernel | GFLOPS @ M=N=K=4096 | 相对 Naive 加速 | 占 cuBLAS 百分比 |
 |---|---:|---:|---:|
-| v0 — Naive | 869 | 1.00× | 9.0% |
-| v1 — 共享内存 tiling | 1,116 | 1.29× | 11.5% |
-| v2 — 寄存器 tiling | 5,191 | 5.98× | 53.7% |
-| v3 — + float4 向量化访存 | 7,683 | 8.85× | 79.5% |
-| v4 — + 1-padding（反面案例）| 7,268 | 8.37× | 75.2% |
-| v5 — Double buffering（反面案例）| 4,781 | 5.50× | 49.4% |
-| **v6 — + cp.async pipeline** ⭐ | **8,708** | **10.02×** | **90.1%** |
-| cuBLAS（FP32 SIMT, autotuned）| 9,668 | 11.13× | 100% |
+| v0 — Naive | 859 | 1.00× | 8.8% |
+| v1 — 共享内存 tiling | 1,107 | 1.29× | 11.4% |
+| v2 — 寄存器 tiling | 5,049 | 5.88× | 51.8% |
+| v3 — + float4 向量化访存 | 7,685 | 8.95× | 78.9% |
+| v4 — + 1-padding（反面案例）| 7,297 | 8.49× | 74.9% |
+| v5 — Double buffering（反面案例）| 4,768 | 5.55× | 49.0% |
+| v6 — + cp.async pipeline | 8,711 | 10.14× | 89.4% |
+| **v7 — + Bs XOR-swizzle** ⭐ | **9,524** | **11.09×** | **97.8%** |
+| cuBLAS（FP32 SIMT, autotuned）| 9,740 | 11.34× | 100% |
 
 > **GFLOPS** = 每秒十亿次浮点运算（Giga Floating-point Operations Per Second）。GEMM 的总 FLOPs = `2 × M × N × K`（每个 FMA 算 2 FLOPs：1 次乘 + 1 次加）。
 
-最优手写 kernel（**v6, cp.async**）达到 **90% 的 cuBLAS 性能**——而这里的 cuBLAS *本身也是 FP32 SIMT*（9.7 TFLOPS ≈ FP32 峰值的 64%；若走 TF32 Tensor Core 会远超 ~15 TFLOPS 的 FP32 天花板，但我们没看到）。所以剩下的 ~10% 是**更好的 FP32-SIMT 工程**——shape autotuning、warp-level tiling、swizzle 布局、L2-aware 的 threadblock rasterization——**不是换了算力单元**。v6 自身的意外之处：它比 v5 快是靠 **latency hiding，而不是 occupancy**——见下方 v6 章节。
+最优手写 kernel（**v7, cp.async + swizzle**）达到 **~98% 的 cuBLAS 性能**——而这里的 cuBLAS *本身也是 FP32 SIMT*（~9.7 TFLOPS ≈ FP32 峰值的 64%；若走 TF32 Tensor Core 会远超 ~15 TFLOPS 的 FP32 天花板，但我们没看到）。所以剩下的小差距是**更好的 FP32-SIMT 工程**（shape autotuning、occupancy），**不是换了算力单元**。最后这一档由两个发现驱动：v6 的提升是 **latency hiding 而非 occupancy**；v7 的是 **消除 shared bank conflict**——两个都在下方解释。
 
 ---
 
@@ -58,7 +59,8 @@ v4 和 v5 是**两个没跑赢 v3 的优化**——在老架构上是经典 win�
 | v3 | `kernels/sgemm_v3_vectorized.cuh` | v2 + `float4` 向量化 global → shared 加载（128-bit LDG）。load 指令数减半。 | **比 v2 快 1.36×**，float4 里程碑 |
 | v4 | `kernels/sgemm_v4_bank_conflict_free.cuh` | v3 + `+1` 共享内存 padding，破坏 shared bank conflict 模式。 | **Ada 上 −3%**（反面案例）|
 | v5 | `kernels/sgemm_v5_double_buffer.cuh` | v3 + 双缓冲共享 tile，让 global load 和 compute 并行。 | **Ada 上 −37%**（反面案例）|
-| v6 | `kernels/sgemm_v6_cpasync.cuh` | v3 计算核心 + `cp.async`（`cuda::memcpy_async` + thread-scope `cuda::pipeline`）替换 global→shared 加载路径；2-stage 双缓冲。 | **比 v3 快 13%**，最优结果（90% cuBLAS）|
+| v6 | `kernels/sgemm_v6_cpasync.cuh` | v3 计算核心 + `cp.async`（`cuda::memcpy_async` + thread-scope `cuda::pipeline`）替换 global→shared 加载路径；2-stage 双缓冲。 | **比 v3 快 13%**（89% cuBLAS）|
+| v7 | `kernels/sgemm_v7_swizzle.cuh` | v6 + 对 Bs 共享布局做 XOR swizzle（`perm(c4)=c4^(c4>>3)`，在 `cp.async` 写和 compute 读两处都用）消除 shared bank conflict。 | **比 v6 快 9%**，最优结果（~98% cuBLAS）|
 
 ### v4 在 Ada 上为什么退化
 
@@ -87,7 +89,20 @@ v6 完全不动 v3 的计算核心，只把 global→shared 的加载路径换�
 
 v6 的 occupancy 和 v5 **完全一样**（16.6%），寄存器数甚至更高——occupancy 论点彻底失败。真正起作用的是 **latency hiding**：cp.async 把 global→shared 传输和计算重叠，把 `long_scoreboard`（等 global memory）stall 从 1.88 压到约 0.075。
 
-因为 v5 和 v6 的 **occupancy 相同、bank conflict 也相同**，v5 → v6 的 +82% 几乎可以完全归因于这个重叠。教训是：`cp.async` 提供**两个独立的好处——register-bypass（→ occupancy）和 async overlap（→ latency hiding）**——在这个 kernel 上只有第二个兑现了。当延迟被另一种方式藏住时，低 occupancy 并不致命。瓶颈现在从 global memory 延迟转移到了 **shared memory bank conflict**（仍是 268 M）——这是未来 swizzle 布局 v7 的目标。
+因为 v5 和 v6 的 **occupancy 相同、bank conflict 也相同**，v5 → v6 的 +82% 几乎可以完全归因于这个重叠。教训是：`cp.async` 提供**两个独立的好处——register-bypass（→ occupancy）和 async overlap（→ latency hiding）**——在这个 kernel 上只有第二个兑现了。当延迟被另一种方式藏住时，低 occupancy 并不致命。瓶颈现在从 global memory 延迟转移到了 **shared memory bank conflict**（仍是 268 M）——**这正是 v7 要解决的**。
+
+### v7（swizzle）为什么快
+
+v7 完全保留 v6，只改 Bs 的每一列**存在 shared 的哪个物理位置**。Bs 读是 4-way bank conflict：一个 warp 的 16 个 `float4` 列只落在 8 个 `float4` bank-组里的 4 个。XOR swizzle——`perm(c4) = c4 ^ (c4 >> 3)`，在 `cp.async` 写 **和** compute 读两处都用——把它们摊到全 8 组。它按整个 `float4` 置换，所以 16 字节对齐（以及 `LDS.128` 向量化）都保住了；v4 的 `+1` padding 做不到这点。
+
+| 指标 @ 4096 | v6 | v7 |
+|---|---:|---:|
+| shared bank conflict | 268 M | **0** |
+| shared-load wavefronts | 671 M | 384 M |
+| `short_scoreboard` stall | 0.39 | 0.275 |
+| GFLOPS | 8,711 | **9,524**（≈98% cuBLAS）|
+
+Nsight Compute 确认 shared bank conflict 直接归 **零**（不只是减半），shared 访存流量降 43%。occupancy 不变（16.6%）——纯靠无冲突的 shared 访问拿下。~98% of（FP32-SIMT）cuBLAS 已接近本设备手写 FP32 kernel 的实际天花板；最后 ~2% 受 occupancy/调优制约，不再是 bank conflict。
 
 ---
 
@@ -154,9 +169,10 @@ GUI 查看：用 Windows / Linux 桌面的 Nsight Compute 直接打开 `.ncu-rep
 │   ├── sgemm_v3_vectorized.cuh
 │   ├── sgemm_v4_bank_conflict_free.cuh
 │   ├── sgemm_v5_double_buffer.cuh
-│   └── sgemm_v6_cpasync.cuh
+│   ├── sgemm_v6_cpasync.cuh
+│   └── sgemm_v7_swizzle.cuh
 ├── tests/
-│   └── test_v6_correctness.cu                # v6 正确性对账 cuBLAS
+│   └── test_v6_correctness.cu                # v6 + v7 正确性对账 cuBLAS
 ├── include/
 │   └── common.cuh                            # CUDA_CHECK / CUBLAS_CHECK / GpuTimer / gflops()
 ├── nsight_reports/                           # 每版 .ncu-rep 归档
@@ -171,8 +187,8 @@ GUI 查看：用 Windows / Linux 桌面的 Nsight Compute 直接打开 `.ncu-rep
 
 知道但没做：
 
-- **Tensor Core / WMMA / `mma.sync`**——一个降精度（TF32/FP16）的、更高的独立天花板。**不是** cuBLAS 在这里超过 v6 的原因：本 benchmark 的 cuBLAS 是 FP32 SIMT（见硬件注）。手写 tensor-core kernel 是另一个独立项目。
-- **Swizzle 共享布局（v7）**——用 XOR 置换列地址消除现在成为 v6 头号瓶颈的 268 M shared-bank conflict。下一步计划。
+- **Tensor Core / WMMA / `mma.sync`**——一个降精度（TF32/FP16）的、更高的独立天花板。**不是** cuBLAS 在这里(微弱)领先 v7 的原因：本 benchmark 的 cuBLAS 是 FP32 SIMT（见硬件注）。手写 tensor-core kernel 是另一个独立项目。
+- **Warp-level 重排**——重排 warp 的 thread 布局（warp tiling）把 occupancy 从现在的 16.6% 抬上去；v7 之后到 cuBLAS 的剩余差距是 occupancy/调优制约，不再是 bank conflict。
 - **Warp specialization**（一个 CTA 内拆 producer/consumer）。
 - **模板化 autotuning**——遍历 (BM, BN, BK, TM, TN) 空间针对 (M, N, K, sm_xx) 的编译/运行时搜索。
 

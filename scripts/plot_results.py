@@ -12,7 +12,7 @@ Outputs:
 
 Numbers below come from the most recent full-power benchmark run on
 RTX 4060 Laptop (sm_89), CUDA 12.4, alpha=1, beta=0, 10 timed iterations
-(2026-05-21 run, includes v6 cp.async).
+(2026-05-21 run, includes v6 cp.async + v7 swizzle).
 Update this dict when you re-run benchmarks.
 """
 
@@ -27,14 +27,15 @@ from pathlib import Path
 SIZES = [512, 1024, 2048, 4096]
 
 RESULTS = {
-    "v0 Naive":          [674.6,  709.3,  985.7,  868.6],
-    "v1 Tiling":         [821.1,  906.1, 1247.4, 1116.3],
-    "v2 RegTile":        [2340.7, 3781.7, 5643.8, 5191.3],
-    "v3 + float4":       [2724.5, 4885.6, 7892.1, 7682.8],
-    "v4 +1 padding (-)": [2667.5, 4629.2, 7403.7, 7268.5],
-    "v5 DoubleBuf (-)":  [2819.4, 4193.6, 5819.2, 4780.6],
-    "v6 + cp.async":     [3777.3, 5537.7, 8410.5, 8707.6],
-    "cuBLAS":            [4983.1, 6322.7, 9669.8, 9668.0],
+    "v0 Naive":          [679.6,  699.6,  973.6,  859.0],
+    "v1 Tiling":         [862.8,  905.2, 1215.9, 1107.4],
+    "v2 RegTile":        [2420.4, 3772.5, 5646.8, 5048.7],
+    "v3 + float4":       [2759.4, 4885.2, 7865.5, 7685.3],
+    "v4 +1 padding (-)": [2702.9, 4315.2, 7378.1, 7297.0],
+    "v5 DoubleBuf (-)":  [2857.6, 4194.4, 5842.0, 4767.8],
+    "v6 + cp.async":     [3812.0, 5534.0, 8417.5, 8711.2],
+    "v7 + swizzle":      [4091.6, 5973.6, 9165.3, 9524.5],
+    "cuBLAS":            [4979.3, 6332.2, 9629.4, 9740.3],
 }
 
 # Color scheme: positive optimizations bright, negative results muted
@@ -45,7 +46,8 @@ COLORS = {
     "v3 + float4":       "#ee6677",   # float4 milestone
     "v4 +1 padding (-)": "#cc99cc",   # muted (negative)
     "v5 DoubleBuf (-)":  "#cc99cc",   # muted (negative)
-    "v6 + cp.async":     "#aa3377",   # headline (best)
+    "v6 + cp.async":     "#ee9944",   # cp.async
+    "v7 + swizzle":      "#aa3377",   # headline (best)
     "cuBLAS":            "#000000",
 }
 
@@ -57,6 +59,7 @@ LINESTYLES = {
     "v4 +1 padding (-)": "--",
     "v5 DoubleBuf (-)":  "--",
     "v6 + cp.async":     "-",
+    "v7 + swizzle":      "-",
     "cuBLAS":            ":",
 }
 
