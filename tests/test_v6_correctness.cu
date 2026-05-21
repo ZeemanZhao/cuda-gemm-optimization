@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include "include/common.cuh"
 #include "kernels/sgemm_v6_cpasync.cuh"
+#include "kernels/sgemm_v7_swizzle.cuh"
 
 static cublasHandle_t g_cublas;
 
@@ -14,7 +15,10 @@ static void cublas_ref(int M, int N, int K, float alpha,
                              N, M, K, &alpha, dB, N, dA, K, &beta, dC, N));
 }
 
-static float run_case(int M, int N, int K) {
+typedef void (*GemmFn)(int, int, int, float,
+                       const float*, const float*, float, float*);
+
+static float run_case(GemmFn launch, int M, int N, int K) {
     size_t szA = (size_t)M*K, szB = (size_t)K*N, szC = (size_t)M*N;
     float *hA = new float[szA], *hB = new float[szB];
     float *hRef = new float[szC], *hOut = new float[szC];
@@ -37,9 +41,9 @@ static float run_case(int M, int N, int K) {
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(hRef, dC, szC*sizeof(float), cudaMemcpyDeviceToHost));
 
-    // v6 under test
+    // kernel under test
     CUDA_CHECK(cudaMemset(dC, 0, szC*sizeof(float)));
-    launch_sgemm_v6_cpasync(M, N, K, alpha, dA, dB, beta, dC);
+    launch(M, N, K, alpha, dA, dB, beta, dC);
     CUDA_CHECK(cudaGetLastError());          // catch launch-config errors
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(hOut, dC, szC*sizeof(float), cudaMemcpyDeviceToHost));
@@ -52,16 +56,22 @@ static float run_case(int M, int N, int K) {
 
 int main() {
     CUBLAS_CHECK(cublasCreate(&g_cublas));
+    struct { const char* name; GemmFn fn; } kernels[] = {
+        { "v6_cpasync", launch_sgemm_v6_cpasync },
+        { "v7_swizzle", launch_sgemm_v7_swizzle },
+    };
     const int sizes[] = { 256, 512 };   // tile-aligned (multiples of BM=BN=128, BK=8)
     int fails = 0;
-    // 1e-2 = project's established bar (benchmark.cu). v6 compute is bit-identical to v3,
-    // so any diff vs cuBLAS is pure SIMT-vs-cuBLAS accumulation + --use_fast_math, not a v6 bug.
-    // We print the actual err (expect ~1e-4) to confirm.
-    for (int s : sizes) {
-        float err = run_case(s, s, s);
-        bool ok = err < 1e-2f;
-        printf("v6 %4dx%4dx%4d  max_abs_diff=%.2e  %s\n", s, s, s, err, ok ? "PASS" : "FAIL");
-        if (!ok) ++fails;
+    // 1e-2 = project's established bar. swizzle is transparent (same output), so this is a
+    // regression gate: v7 must stay PASS. Print actual err (expect ~1e-6) to confirm.
+    for (auto& k : kernels) {
+        for (int s : sizes) {
+            float err = run_case(k.fn, s, s, s);
+            bool ok = err < 1e-2f;
+            printf("%-12s %4dx%4dx%4d  max_abs_diff=%.2e  %s\n",
+                   k.name, s, s, s, err, ok ? "PASS" : "FAIL");
+            if (!ok) ++fails;
+        }
     }
     cublasDestroy(g_cublas);
     if (fails) { printf("FAILED %d case(s)\n", fails); return 1; }

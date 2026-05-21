@@ -18,7 +18,8 @@ $(TARGET): benchmark.cu \
            kernels/sgemm_v3_vectorized.cuh \
            kernels/sgemm_v4_bank_conflict_free.cuh \
            kernels/sgemm_v5_double_buffer.cuh \
-           kernels/sgemm_v6_cpasync.cuh
+           kernels/sgemm_v6_cpasync.cuh \
+           kernels/sgemm_v7_swizzle.cuh
 	$(NVCC) $(CFLAGS) $(INCLUDES) $(LIBS) -o $@ benchmark.cu
 
 run: $(TARGET)
@@ -35,7 +36,7 @@ sm__sass_thread_inst_executed_op_ffma_pred_on.sum \
 	    --target-processes all \
 	    ./$(TARGET)
 
-test: tests/test_v6_correctness.cu include/common.cuh kernels/sgemm_v6_cpasync.cuh
+test: tests/test_v6_correctness.cu include/common.cuh kernels/sgemm_v6_cpasync.cuh kernels/sgemm_v7_swizzle.cuh
 	$(NVCC) $(CFLAGS) $(INCLUDES) $(LIBS) -o test_v6 tests/test_v6_correctness.cu
 	./test_v6
 

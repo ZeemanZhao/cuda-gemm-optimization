@@ -13,6 +13,7 @@
 #include "kernels/sgemm_v4_bank_conflict_free.cuh"
 #include "kernels/sgemm_v5_double_buffer.cuh"
 #include "kernels/sgemm_v6_cpasync.cuh"
+#include "kernels/sgemm_v7_swizzle.cuh"
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -106,11 +107,11 @@ int main()
     printf("alpha=1.0, beta=0.0,  repeats=%d\n\n", REPEATS);
 
     // Header
-    printf("%-6s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s\n",
-           "Size", "Naive", "Tiling", "RegT(v2)", "VecReg(v3)", "BankF(v4)", "DBuf(v5)", "cpAsy(v6)", "cuBLAS");
-    printf("%-6s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s\n",
-           "    ", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS");
-    printf("%s\n", std::string(100, '-').c_str());
+    printf("%-6s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s\n",
+           "Size", "Naive", "Tiling", "RegT(v2)", "VecReg(v3)", "BankF(v4)", "DBuf(v5)", "cpAsy(v6)", "Swz(v7)", "cuBLAS");
+    printf("%-6s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s  %-9s\n",
+           "    ", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS", "GFLOPS");
+    printf("%s\n", std::string(110, '-').c_str());
 
     const float alpha = 1.f, beta = 0.f;
 
@@ -151,7 +152,7 @@ int main()
         };
 
         // ── Benchmark ──
-        double ms_naive = 0, ms_tile = 0, ms_v2 = 0, ms_vec = 0, ms_v4 = 0, ms_v5 = 0, ms_v6 = 0, ms_cublas = 0;
+        double ms_naive = 0, ms_tile = 0, ms_v2 = 0, ms_vec = 0, ms_v4 = 0, ms_v5 = 0, ms_v6 = 0, ms_v7 = 0, ms_cublas = 0;
 
         // Naive
         ms_naive = time_kernel(launch_sgemm_naive,
@@ -188,6 +189,11 @@ int main()
                             M, N, K, alpha, dA, dB, beta, dC, hC0);
         verify("v6_cpasync");
 
+        // v7: cp.async + Bs swizzle
+        ms_v7 = time_kernel(launch_sgemm_v7_swizzle,
+                            M, N, K, alpha, dA, dB, beta, dC, hC0);
+        verify("v7_swizzle");
+
         // cuBLAS
         ms_cublas = time_kernel(cublas_sgemm,
                                  M, N, K, alpha, dA, dB, beta, dC, hC0);
@@ -200,14 +206,15 @@ int main()
         double gf_v4     = gflops(M, N, K, ms_v4);
         double gf_v5     = gflops(M, N, K, ms_v5);
         double gf_v6     = gflops(M, N, K, ms_v6);
+        double gf_v7     = gflops(M, N, K, ms_v7);
         double gf_cublas = gflops(M, N, K, ms_cublas);
 
         if (ms_naive > 0)
-            printf("%-6d  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f\n",
-                   M, gf_naive, gf_tile, gf_v2, gf_vec, gf_v4, gf_v5, gf_v6, gf_cublas);
+            printf("%-6d  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f\n",
+                   M, gf_naive, gf_tile, gf_v2, gf_vec, gf_v4, gf_v5, gf_v6, gf_v7, gf_cublas);
         else
-            printf("%-6d  %-9s  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f\n",
-                   M, "skip", gf_tile, gf_v2, gf_vec, gf_v4, gf_v5, gf_v6, gf_cublas);
+            printf("%-6d  %-9s  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f  %-9.1f\n",
+                   M, "skip", gf_tile, gf_v2, gf_vec, gf_v4, gf_v5, gf_v6, gf_v7, gf_cublas);
 
         // ── Cleanup ──
         cudaFree(dA); cudaFree(dB); cudaFree(dC);
